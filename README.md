@@ -10,9 +10,18 @@ registry entry rather than a new domain.
 |---|---|---|
 | **ShipRate AU** | `https://tools.profitpather.com/ship/mcp` | 5 |
 | **Business Days** | `https://tools.profitpather.com/days/mcp` | 4 |
+| **Storefront Check** | `https://tools.profitpather.com/store/mcp` | 4 |
+| **US Tariff Lookup** | `https://tools.profitpather.com/duty/mcp` | 3 |
 
-Published in the official MCP Registry as `com.profitpather.tools/shiprate-au`
-and `com.profitpather.tools/business-days`.
+All four are published in the official MCP Registry under
+`com.profitpather.tools/`.
+
+A theme runs through all of them: each one distinguishes what it knows from what
+it cannot see, and says so in the response. ShipRate refuses to rank across
+currencies because the data has no exchange rate. Business Days reports provider
+disagreement instead of resolving it. Storefront Check carries a
+`not_observable` list on every tool. US Tariff Lookup states what its figures
+exclude. A confidently wrong tool is worse than no tool.
 
 ## ShipRate AU
 
@@ -70,6 +79,55 @@ than resolved**:
 Providers are compared **by date, never by name**, since the same day is named
 differently by each. A disputed date arrives as a caveat attached to the answer,
 not as a confident single date.
+
+## Storefront Check
+
+Audit a public ecommerce storefront from the outside. No credentials and no
+cooperation from the store, so it works on a competitor or a prospect.
+
+- `detect_tracking_tags` - every ad and analytics tag visible in the HTML, with ids
+- `check_agent_readiness` - whether AI crawlers may read the store, and whether the catalogue is machine readable
+- `check_structured_data` - JSON-LD types, parse failures and commerce markup
+- `audit_product_feed` - Shopify catalogue health for Merchant Center and Meta feeds
+
+It distinguishes **present, absent and not observable** and never conflates
+them. A Shopify Custom Pixel runs in a sandboxed iframe and cannot be seen from
+outside, so an empty tag list is not evidence a store is untagged.
+
+The check worth knowing about: each Google measurement id is verified against
+Google Tag Manager, which answers `404` for an id it does not recognise. A dead
+id means `gtag` never initialises, so a store looks correctly tagged while
+recording nothing and a campaign can spend for months at zero conversions. A
+consent app carrying a stale id from an old property is the usual cause, and
+this failure appears nowhere else.
+
+## US Tariff Lookup
+
+Find the right US tariff code for a product and the duty rate that governs it,
+read live from the official USITC Harmonized Tariff Schedule.
+
+- `find_hts_code` - candidates from a plain-language product description
+- `lookup_us_duty_rate` - the governing rate, with free-trade eligibility by origin
+- `estimate_us_duty` - indicative duty on a customs value
+
+Two traps it handles. **Rates sit on the 8-digit line**, while the 10-digit
+statistical lines below are blank and inherit, so reading the rate off the code
+you were handed looks duty-free. And **duty follows the country of origin of the
+goods, not the seller's address**: `AU` appears in the special column for most
+apparel, and for apparel the rules of origin are yarn-forward, so Australian
+wool spun and sewn in China is Chinese origin and pays the general rate.
+
+Making the search usable took four fixes, each found by testing real products.
+The official search is an OR match returned in tariff-number order rather than
+by relevance, so it is re-ranked locally with terms weighted by rarity. Consumer
+words are translated to trade terms and the translation is reported, because the
+schedule matches whole words: "bra" returns nothing while "brassiere" finds
+heading 6212, and "leggings" returns frog legs.
+
+Trade remedies are excluded from every figure and said to be. Section 301,
+Section 232, antidumping and countervailing duties all sit in Chapter 99, stack
+on top, and routinely exceed the base rate. Chapter 98 and 99 lines are returned
+in a separate list so a conditional `Free` rate cannot be read as the answer.
 
 ## Discovery
 
