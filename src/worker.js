@@ -499,7 +499,7 @@ No account or key is needed to use this server.`;
 const shipServer = {
   slug: "ship",
   name: "ShipRate AU",
-  version: "1.0.0",
+  version: "1.1.1",
   tagline:
     "Australian parcel shipping prices from two independent sources in one call: Australia Post retail, and a pre-negotiated commercial courier panel.",
   description:

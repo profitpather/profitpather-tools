@@ -3,7 +3,11 @@
   "name": "com.profitpather.tools/business-days",
   "title": "Business Days",
   "description": "Public holidays and working-day maths for 200+ countries, cross-checked across three providers.",
-  "version": "2.0.0",
+  "version": "2.0.1",
+  "repository": {
+    "url": "https://github.com/profitpather/profitpather-tools",
+    "source": "github"
+  },
   "remotes": [
     {
       "type": "streamable-http",
