@@ -1,0 +1,6 @@
+{
+  "name": "shiprate-mcp",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": { "dev": "wrangler dev", "deploy": "wrangler deploy" }
+}

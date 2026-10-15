@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "shiprate-mcp",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-02-09",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "routes": [
+    { "pattern": "tools.profitpather.com", "zone_name": "profitpather.com", "custom_domain": true },
+    { "pattern": "ship.profitpather.com", "zone_name": "profitpather.com", "custom_domain": true }
+  ],
+  "vars": {
+    "SERVICE_NAME": "Profitpather Tools",
+    "PUBLIC_ORIGIN": "https://tools.profitpather.com",
+    "MCP_REGISTRY_AUTH": "v=MCPv1; k=ed25519; p=6V9FBmKsuKbobrE+m1TXEv41HWtJ+eQQaXr9bY2W6+U="
+  }
+}

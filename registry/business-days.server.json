@@ -1,0 +1,13 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.profitpather.tools/business-days",
+  "title": "Business Days",
+  "description": "Public holidays and working-day maths for 200+ countries, cross-checked across three providers.",
+  "version": "2.0.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://tools.profitpather.com/days/mcp"
+    }
+  ]
+}
