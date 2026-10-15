@@ -27,6 +27,7 @@
 //    comparison_note.
 import { daysServer } from "./days/server.js";
 import { storeServer } from "./store/server.js";
+import { dutyServer } from "./duty/server.js";
 
 const AP_BASE = "https://digitalapi.auspost.com.au";
 const ES_BASE = "https://public-api.easyship.com/2024-09";
@@ -36,7 +37,7 @@ const CACHE_TTL_S = 12 * 60 * 60;
 // Easyship's blank-city rejection, so one route kept returning AusPost-only
 // results that looked like a live failure. Without this, every future fix ships
 // with a silent 12-hour tail of pre-fix answers.
-const CACHE_VERSION = "v4-store-server-jsonld-recursion";
+const CACHE_VERSION = "v8-duty-split-special-provisions";
 const RATE_LIMIT_PER_MIN = 20;
 
 // Verified live against the API, not guessed. "others", "general" and
@@ -519,7 +520,7 @@ const shipServer = {
 };
 
 // Order matters: the first entry is what the legacy root /mcp endpoint aliases.
-const SERVERS = [shipServer, daysServer, storeServer];
+const SERVERS = [shipServer, daysServer, storeServer, dutyServer];
 
 const serverBySlug = (slug) => SERVERS.find((s) => s.slug === slug) || null;
 const mcpUrl = (origin, server) => `${origin}/${server.slug}/mcp`;
@@ -733,8 +734,13 @@ async function handleMcpPost(request, env, ctx, url, server) {
   // Cache only tools/call, keyed on the whole request, so repeated identical
   // quotes never touch the upstream APIs again.
   const isCall = body?.method === "tools/call";
+  // Set CACHE_DISABLED in .dev.vars for development. Three separate times a
+  // changed tool looked broken because the previous response was replayed from
+  // cache. Host sniffing cannot detect development here: wrangler dev resolves
+  // the request to the configured route hostname, so the URL reads
+  // tools.profitpather.com locally too.
   let cacheKey = null;
-  if (isCall) {
+  if (isCall && !env.CACHE_DISABLED) {
     const sig = JSON.stringify({ v: CACHE_VERSION, s: server.slug, n: body?.params?.name, a: body?.params?.arguments || {} });
     cacheKey = new Request(`${url.origin}/__cache/${encodeURIComponent(sig)}`, { method: "GET" });
     const hit = await caches.default.match(cacheKey);
@@ -745,7 +751,7 @@ async function handleMcpPost(request, env, ctx, url, server) {
   }
 
   const res = await handleRpc(body, env, server);
-  if (isCall && res.status === 200) {
+  if (isCall && cacheKey && res.status === 200) {
     try {
       const clone = await res.clone().json();
       if (clone?.result && clone.result.isError !== true) {

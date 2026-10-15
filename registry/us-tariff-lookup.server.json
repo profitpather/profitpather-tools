@@ -1,0 +1,17 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.profitpather.tools/us-tariff-lookup",
+  "title": "US Tariff Lookup",
+  "description": "Find the right US tariff code for a product and the duty rate that actually governs it.",
+  "version": "1.0.0",
+  "repository": {
+    "url": "https://github.com/profitpather/profitpather-tools",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://tools.profitpather.com/duty/mcp"
+    }
+  ]
+}
