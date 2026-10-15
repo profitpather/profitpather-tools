@@ -1,0 +1,17 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.profitpather.tools/storefront-check",
+  "title": "Storefront Check",
+  "description": "Audit any storefront from outside: ad tags, dead-tag detection, AI crawler access, feed readiness.",
+  "version": "1.0.0",
+  "repository": {
+    "url": "https://github.com/profitpather/profitpather-tools",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://tools.profitpather.com/store/mcp"
+    }
+  ]
+}

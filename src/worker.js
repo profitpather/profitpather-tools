@@ -26,6 +26,7 @@
 //    kind of price. Each rate carries pricing_basis, and the response carries a
 //    comparison_note.
 import { daysServer } from "./days/server.js";
+import { storeServer } from "./store/server.js";
 
 const AP_BASE = "https://digitalapi.auspost.com.au";
 const ES_BASE = "https://public-api.easyship.com/2024-09";
@@ -35,7 +36,7 @@ const CACHE_TTL_S = 12 * 60 * 60;
 // Easyship's blank-city rejection, so one route kept returning AusPost-only
 // results that looked like a live failure. Without this, every future fix ships
 // with a silent 12-hour tail of pre-fix answers.
-const CACHE_VERSION = "v3-actionable-easyship-notes";
+const CACHE_VERSION = "v4-store-server-jsonld-recursion";
 const RATE_LIMIT_PER_MIN = 20;
 
 // Verified live against the API, not guessed. "others", "general" and
@@ -518,7 +519,7 @@ const shipServer = {
 };
 
 // Order matters: the first entry is what the legacy root /mcp endpoint aliases.
-const SERVERS = [shipServer, daysServer];
+const SERVERS = [shipServer, daysServer, storeServer];
 
 const serverBySlug = (slug) => SERVERS.find((s) => s.slug === slug) || null;
 const mcpUrl = (origin, server) => `${origin}/${server.slug}/mcp`;
