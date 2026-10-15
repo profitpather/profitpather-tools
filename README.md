@@ -101,8 +101,12 @@ really protects the upstream quotas.
 ```bash
 npm install
 npx wrangler dev        # needs AUSPOST_KEY and EASYSHIP_KEY in .dev.vars
-npx wrangler deploy
+npx wrangler deploy     # needs CLOUDFLARE_ACCOUNT_ID in .env
 ```
+
+The Cloudflare account id is deliberately not in `wrangler.jsonc`. Put it in a
+gitignored `.env` as `CLOUDFLARE_ACCOUNT_ID=...`; wrangler reads it from there.
+Without it, a deploy fails on any login with more than one account available.
 
 `node --check` is not a sufficient gate: it accepts code that esbuild rejects.
 Use `npx wrangler deploy --dry-run --outdir /tmp/out` instead.
