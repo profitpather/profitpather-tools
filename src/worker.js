@@ -851,6 +851,18 @@ export default {
     if (request.method === "GET" && isWellKnown(path)) {
       return json(hubDiscovery(origin), 200, { "cache-control": "public, max-age=3600" });
     }
+    // Glama's crawler asks for this repeatedly (103 hits in a week). It is not
+    // a descriptive manifest: it carries a claim token Glama issues to the
+    // domain owner, which is how an unclaimed connector listing gets claimed.
+    // The token cannot be self-generated, so this serves it only once the
+    // secret is set and 404s until then, exactly as an unclaimed domain should.
+    if (request.method === "GET" && path === "/.well-known/glama.json") {
+      if (!env.GLAMA_CLAIM) return json({ error: "Not found" }, 404);
+      return json(
+        { $schema: "https://glama.ai/mcp/schemas/connector.json", claim: env.GLAMA_CLAIM },
+        200, { "cache-control": "public, max-age=300" }
+      );
+    }
     // Domain-ownership proof for the official MCP Registry.
     if (request.method === "GET" && path === "/.well-known/mcp-registry-auth") {
       return new Response((env.MCP_REGISTRY_AUTH || "") + "\n", {
