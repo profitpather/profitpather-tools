@@ -28,6 +28,7 @@
 import { daysServer } from "./days/server.js";
 import { storeServer } from "./store/server.js";
 import { dutyServer } from "./duty/server.js";
+import { clientFamily, recordRpc, statsPayload, statsHTML } from "./stats.js";
 
 const AP_BASE = "https://digitalapi.auspost.com.au";
 const ES_BASE = "https://public-api.easyship.com/2024-09";
@@ -720,8 +721,20 @@ function overLimit(ip) {
 // Shared POST handling for every server: per-IP brake, then the 12h response
 // cache, then the RPC itself.
 async function handleMcpPost(request, env, ctx, url, server) {
+  const client = clientFamily(request.headers.get("user-agent"));
+  // Counters answer "is anyone using this"; the log line makes the same thing
+  // visible live through `wrangler tail`. Neither records arguments.
+  const note = (method, extra = {}) => {
+    recordRpc(env, ctx, { server: server.slug, method, client, ...extra });
+    console.log(JSON.stringify({
+      t: "rpc", s: server.slug, m: method, tool: extra.tool || "",
+      c: client, err: !!extra.isError, cache: !!extra.cached,
+    }));
+  };
+
   const ip = request.headers.get("cf-connecting-ip") || "unknown";
   if (overLimit(ip)) {
+    note("rate_limited", { isError: true });
     return json({
       jsonrpc: "2.0", id: null,
       error: { code: -32029, message: `Rate limit: at most ${RATE_LIMIT_PER_MIN} calls a minute from one address. Identical quotes are cached for 12 hours, so repeating a request costs you nothing.` },
@@ -729,16 +742,20 @@ async function handleMcpPost(request, env, ctx, url, server) {
   }
   let body = null;
   try { body = await request.json(); } catch { /* handled below */ }
-  if (!body) return rpc(null, { error: { code: -32700, message: "Parse error: body must be JSON-RPC 2.0" } });
+  if (!body) {
+    note("parse_error", { isError: true });
+    return rpc(null, { error: { code: -32700, message: "Parse error: body must be JSON-RPC 2.0" } });
+  }
+
+  const method = String(body.method || "unknown").slice(0, 40);
+  const isCall = method === "tools/call";
+  const tool = isCall ? String(body?.params?.name || "") : "";
 
   // Cache only tools/call, keyed on the whole request, so repeated identical
   // quotes never touch the upstream APIs again.
-  const isCall = body?.method === "tools/call";
-  // Set CACHE_DISABLED in .dev.vars for development. Three separate times a
-  // changed tool looked broken because the previous response was replayed from
-  // cache. Host sniffing cannot detect development here: wrangler dev resolves
-  // the request to the configured route hostname, so the URL reads
-  // tools.profitpather.com locally too.
+  // Set CACHE_DISABLED in .dev.vars for development. Host sniffing cannot
+  // detect development here: wrangler dev resolves the request to the
+  // configured route hostname, so the URL reads tools.profitpather.com locally.
   let cacheKey = null;
   if (isCall && !env.CACHE_DISABLED) {
     const sig = JSON.stringify({ v: CACHE_VERSION, s: server.slug, n: body?.params?.name, a: body?.params?.arguments || {} });
@@ -746,19 +763,25 @@ async function handleMcpPost(request, env, ctx, url, server) {
     const hit = await caches.default.match(cacheKey);
     if (hit) {
       const cached = await hit.json();
+      note(method, { tool, cached: true });
       return rpc(body?.id ?? null, { result: cached.result });
     }
   }
 
   const res = await handleRpc(body, env, server);
-  if (isCall && cacheKey && res.status === 200) {
+  // 202 is the spec answer for an accepted notification, so only 4xx/5xx counts
+  // as a failure here.
+  let isError = res.status >= 400;
+  if (res.status === 200) {
     try {
       const clone = await res.clone().json();
-      if (clone?.result && clone.result.isError !== true) {
+      if (clone?.error || clone?.result?.isError === true) isError = true;
+      if (isCall && cacheKey && clone?.result && clone.result.isError !== true) {
         ctx.waitUntil(caches.default.put(cacheKey, json({ result: clone.result }, 200, { "cache-control": `max-age=${CACHE_TTL_S}` })));
       }
-    } catch { /* caching is best effort and must never fail the call */ }
+    } catch { /* caching and telemetry are best effort, never fail the call */ }
   }
+  note(method, { tool, isError });
   return res;
 }
 
@@ -798,6 +821,26 @@ export default {
     // ── Hub ────────────────────────────────────────────────────────────────
     if (request.method === "GET" && (path === "/" || path === "/index.html")) {
       return html(hubLanding(env, url));
+    }
+    // Usage counters. Fails closed: without STATS_KEY set, or with the wrong
+    // key, this 404s rather than confirming the endpoint exists. The numbers
+    // are commercial information about how much the hub is really used.
+    if (request.method === "GET" && (path === "/stats" || path === "/stats.json")) {
+      const key = url.searchParams.get("key") || "";
+      if (!env.STATS_KEY || key !== env.STATS_KEY) return json({ error: "Not found" }, 404);
+      if (!env.STATS) return json({ error: "No stats database is bound to this Worker." }, 503);
+      const days = Number(url.searchParams.get("days")) || 14;
+      let payload;
+      try {
+        payload = await statsPayload(env, days);
+      } catch (e) {
+        return json({ error: `Could not read the counters: ${String(e?.message || e)}` }, 500);
+      }
+      if (path === "/stats.json") return json(payload, 200, { "cache-control": "no-store" });
+      return new Response(statsHTML(payload, key), {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+      });
     }
     if (request.method === "GET" && path === "/health") {
       return json({

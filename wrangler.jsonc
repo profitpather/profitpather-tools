@@ -9,6 +9,9 @@
     { "pattern": "tools.profitpather.com", "zone_name": "profitpather.com", "custom_domain": true },
     { "pattern": "ship.profitpather.com", "zone_name": "profitpather.com", "custom_domain": true }
   ],
+  "d1_databases": [
+    { "binding": "STATS", "database_name": "tools-hub-stats", "database_id": "4fe263c2-ede1-4ac7-90f1-2eabee9cacb5" }
+  ],
   "vars": {
     "SERVICE_NAME": "Profitpather Tools",
     "PUBLIC_ORIGIN": "https://tools.profitpather.com",
