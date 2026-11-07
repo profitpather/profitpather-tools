@@ -28,7 +28,7 @@
 import { daysServer } from "./days/server.js";
 import { storeServer } from "./store/server.js";
 import { dutyServer } from "./duty/server.js";
-import { clientFamily, recordRpc, statsPayload, statsHTML } from "./stats.js";
+import { clientFamily, selfReportedClient, recordRpc, statsPayload, statsHTML } from "./stats.js";
 import { isFault } from "./errors.js";
 
 const AP_BASE = "https://digitalapi.auspost.com.au";
@@ -755,7 +755,11 @@ function overLimit(ip) {
 // Shared POST handling for every server: per-IP brake, then the 12h response
 // cache, then the RPC itself.
 async function handleMcpPost(request, env, ctx, url, server) {
-  const client = clientFamily(request.headers.get("user-agent"));
+  // The UA is a crawler's free text; the MCP client name is self-reported app
+  // identity. Prefer it where the handshake carries one, so the counters can
+  // say whether any real client app has ever connected.
+  const uaClient = clientFamily(request.headers.get("user-agent"));
+  let client = uaClient;
   // Counters answer "is anyone using this"; the log line makes the same thing
   // visible live through `wrangler tail`. Neither records arguments.
   const note = (method, extra = {}) => {
@@ -782,6 +786,7 @@ async function handleMcpPost(request, env, ctx, url, server) {
   }
 
   const method = String(body.method || "unknown").slice(0, 40);
+  client = selfReportedClient(body) || uaClient;
   const isCall = method === "tools/call";
   const tool = isCall ? String(body?.params?.name || "") : "";
 

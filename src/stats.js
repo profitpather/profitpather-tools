@@ -42,6 +42,26 @@ export const isWork = (method) => method === "tools/call";
  * "is this a real client or a directory crawler", never enough to fingerprint
  * a caller.
  */
+/**
+ * MCP clients self-report an app name in initialize (`params.clientInfo.name`)
+ * or, on the modern revision, in `_meta["io.modelcontextprotocol/clientInfo"]`.
+ * That is far better evidence than the HTTP user-agent, which crawlers set to
+ * whatever they like, and it is the only way to answer the question that
+ * matters: has a real client app with a human behind it ever connected, or is
+ * every handshake an index prober?
+ *
+ * It is an app identity, not a user identity. Lowercased and truncated so it
+ * cannot become a high-cardinality fingerprint.
+ */
+export function selfReportedClient(body) {
+  const p = body?.params || {};
+  const modern = p._meta && p._meta["io.modelcontextprotocol/clientInfo"];
+  const name = (modern && modern.name) || p.clientInfo?.name;
+  if (!name || typeof name !== "string") return null;
+  const clean = name.trim().toLowerCase().slice(0, 40);
+  return clean ? `app:${clean}` : null;
+}
+
 export function clientFamily(ua) {
   const s = String(ua || "").toLowerCase();
   if (!s) return "none";
