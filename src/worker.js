@@ -29,6 +29,7 @@ import { daysServer } from "./days/server.js";
 import { storeServer } from "./store/server.js";
 import { dutyServer } from "./duty/server.js";
 import { clientFamily, recordRpc, statsPayload, statsHTML } from "./stats.js";
+import { isFault } from "./errors.js";
 
 const AP_BASE = "https://digitalapi.auspost.com.au";
 const ES_BASE = "https://public-api.easyship.com/2024-09";
@@ -650,58 +651,91 @@ const rpc = (id, payload) => json({ jsonrpc: "2.0", id: id ?? null, ...payload }
 const negotiate = (server, asked) =>
   server.protocols?.has(asked) ? asked : server.defaultProtocol || asked || "2025-06-18";
 
+// The 2026-07-28 revision replaced the initialize handshake with per-request
+// metadata and made server/discover mandatory. These servers keep no session
+// state, so the stateless era already worked here; what was missing was saying
+// so. Without it, 19 of 19 discover probes got a method-not-found, and on
+// Streamable HTTP a modern client is specified to fall back by inspecting a 4xx
+// body, so answering 200 risked clients never falling back at all.
+const MODERN_PROTOCOL = "2026-07-28";
+const LEGACY_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
+const supportedVersions = (server) =>
+  [...new Set([MODERN_PROTOCOL, ...(server.protocols ? [...server.protocols] : LEGACY_PROTOCOLS)])];
+
 async function handleRpc(req, env, server) {
+  const out = (res, kind, tool = "") => ({ res, kind, tool });
   if (!req || req.jsonrpc !== "2.0" || typeof req.method !== "string") {
-    return rpc(req?.id ?? null, { error: { code: -32600, message: "Invalid Request" } });
+    return out(rpc(req?.id ?? null, { error: { code: -32600, message: "Invalid Request" } }), "bad_request");
   }
   const { id, method, params } = req;
   // Streamable HTTP: an accepted notification gets 202 and no body. It must
   // never receive a JSON-RPC response, not even a method-not-found error.
-  if (method.startsWith("notifications/")) return new Response(null, { status: 202 });
+  if (method.startsWith("notifications/")) return out(new Response(null, { status: 202 }), "ok");
+
+  // Modern (2026-07-28) discovery. Shape per the spec: serverInfo rides in
+  // _meta, the version list is supportedVersions, and ttlMs/cacheScope are
+  // required. No tool list here; capabilities only signals that tools exist.
+  if (method === "server/discover") {
+    return out(rpc(id, {
+      result: {
+        resultType: "complete",
+        supportedVersions: supportedVersions(server),
+        capabilities: { tools: {} },
+        _meta: { "io.modelcontextprotocol/serverInfo": { name: server.name, version: server.version } },
+        instructions: server.instructions,
+        ttlMs: 3600000,
+        cacheScope: "public",
+      },
+    }), "ok");
+  }
+
   if (method === "initialize") {
-    return rpc(id, {
+    return out(rpc(id, {
       result: {
         protocolVersion: negotiate(server, params?.protocolVersion),
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: server.name, version: server.version },
         instructions: server.instructions,
       },
-    });
+    }), "ok");
   }
-  if (method === "ping") return rpc(id, { result: {} });
-  if (method === "tools/list") {
-    return rpc(id, { result: { tools: server.tools } });
-  }
+  if (method === "ping") return out(rpc(id, { result: {} }), "ok");
+  if (method === "tools/list") return out(rpc(id, { result: { tools: server.tools } }), "ok");
+
   if (method === "tools/call") {
     const name = params?.name;
-    if (!name) return rpc(id, { error: { code: -32602, message: "Missing tool name" } });
+    if (!name) return out(rpc(id, { error: { code: -32602, message: "Missing tool name" } }), "bad_request");
     // Each server exposes only its own tools, so a slug cannot be used to reach
     // another server's surface.
     if (!server.tools.some((t) => t.name === name)) {
-      return rpc(id, {
+      return out(rpc(id, {
         error: {
           code: -32601,
           message: `Unknown tool: ${name}. ${server.name} exposes ${server.tools.map((t) => t.name).join(", ")}.`,
         },
-      });
+      }), "bad_request", String(name));
     }
     try {
-      const out = await server.run(name, params?.arguments, env);
-      const result = { content: [{ type: "text", text: out.text }], isError: false };
+      const r = await server.run(name, params?.arguments, env);
+      const result = { content: [{ type: "text", text: r.text }], isError: false };
       // A client that validates will reject structuredContent on a tool with no
       // declared outputSchema, so only send it where the schema exists.
       const tool = server.tools.find((t) => t.name === name);
-      if (tool?.outputSchema && out.structured !== undefined) result.structuredContent = out.structured;
-      return rpc(id, { result });
+      if (tool?.outputSchema && r.structured !== undefined) result.structuredContent = r.structured;
+      return out(rpc(id, { result }), "ok", name);
     } catch (e) {
       // The caller is a model, so the error has to be actionable prose, not a
       // stack trace. Upstream messages are already written that way above.
-      return rpc(id, {
-        result: { content: [{ type: "text", text: String(e?.message || e) }], isError: true },
-      });
+      return out(
+        rpc(id, { result: { content: [{ type: "text", text: String(e?.message || e) }], isError: true } }),
+        isFault(e) ? "fault" : "user_error",
+        name
+      );
     }
   }
-  return rpc(id, { error: { code: -32601, message: `Method not found: ${method}` } });
+  // Not an error worth counting: a server is specified to answer -32601 here so
+  // that a dual-era client can tell its era and proceed.
+  return out(rpc(id, { error: { code: -32601, message: `Method not found: ${method}` } }), "unsupported_method");
 }
 
 // Per-IP cap. Crude and in-isolate, so it is a brake on accidental hammering
@@ -728,13 +762,13 @@ async function handleMcpPost(request, env, ctx, url, server) {
     recordRpc(env, ctx, { server: server.slug, method, client, ...extra });
     console.log(JSON.stringify({
       t: "rpc", s: server.slug, m: method, tool: extra.tool || "",
-      c: client, err: !!extra.isError, cache: !!extra.cached,
+      c: client, kind: extra.kind || "ok", cache: !!extra.cached,
     }));
   };
 
   const ip = request.headers.get("cf-connecting-ip") || "unknown";
   if (overLimit(ip)) {
-    note("rate_limited", { isError: true });
+    note("rate_limited", { kind: "rate_limited", isError: false });
     return json({
       jsonrpc: "2.0", id: null,
       error: { code: -32029, message: `Rate limit: at most ${RATE_LIMIT_PER_MIN} calls a minute from one address. Identical quotes are cached for 12 hours, so repeating a request costs you nothing.` },
@@ -743,7 +777,7 @@ async function handleMcpPost(request, env, ctx, url, server) {
   let body = null;
   try { body = await request.json(); } catch { /* handled below */ }
   if (!body) {
-    note("parse_error", { isError: true });
+    note("parse_error", { kind: "bad_request", isError: false });
     return rpc(null, { error: { code: -32700, message: "Parse error: body must be JSON-RPC 2.0" } });
   }
 
@@ -763,25 +797,23 @@ async function handleMcpPost(request, env, ctx, url, server) {
     const hit = await caches.default.match(cacheKey);
     if (hit) {
       const cached = await hit.json();
-      note(method, { tool, cached: true });
+      note(method, { tool, kind: "ok", cached: true });
       return rpc(body?.id ?? null, { result: cached.result });
     }
   }
 
-  const res = await handleRpc(body, env, server);
-  // 202 is the spec answer for an accepted notification, so only 4xx/5xx counts
-  // as a failure here.
-  let isError = res.status >= 400;
-  if (res.status === 200) {
+  const { res, kind } = await handleRpc(body, env, server);
+  if (isCall && cacheKey && res.status === 200) {
     try {
       const clone = await res.clone().json();
-      if (clone?.error || clone?.result?.isError === true) isError = true;
-      if (isCall && cacheKey && clone?.result && clone.result.isError !== true) {
+      if (clone?.result && clone.result.isError !== true) {
         ctx.waitUntil(caches.default.put(cacheKey, json({ result: clone.result }, 200, { "cache-control": `max-age=${CACHE_TTL_S}` })));
       }
-    } catch { /* caching and telemetry are best effort, never fail the call */ }
+    } catch { /* caching is best effort and must never fail the call */ }
   }
-  note(method, { tool, isError });
+  // Only a fault is this server's problem. user_error means the caller sent
+  // something invalid and got told so, which is the server working.
+  note(method, { tool, kind, isError: kind === "fault" });
   return res;
 }
 

@@ -20,6 +20,8 @@
  *    pays the general rate. Every response says this.
  */
 
+import { markFault } from "../errors.js";
+
 const HTS_BASE = "https://hts.usitc.gov/reststop";
 const UA = "ProfitpatherTariffLookup/1.0 (+https://tools.profitpather.com/duty)";
 const TIMEOUT_MS = 20000;
@@ -36,11 +38,11 @@ async function htsGet(path) {
     cf: { cacheTtl: 86400, cacheEverything: true },
   });
   const text = await res.text();
-  if (!res.ok) throw new Error(`The USITC tariff service answered HTTP ${res.status}. It is the official source and this tool has no cached copy, so try again shortly.`);
+  if (!res.ok) throw markFault(new Error(`The USITC tariff service answered HTTP ${res.status}. It is the official source and this tool has no cached copy, so try again shortly.`));
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error("The USITC tariff service returned a non-JSON response. This happens on some chapters, notably Chapter 99, where the endpoint serves HTML instead.");
+    throw markFault(new Error("The USITC tariff service returned a non-JSON response. This happens on some chapters, notably Chapter 99, where the endpoint serves HTML instead."));
   }
 }
 

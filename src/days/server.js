@@ -12,6 +12,7 @@
  */
 
 import { fetchNager, gatherSources, compareNational, SOURCE_LABELS } from "./sources.js";
+import { markFault } from "../errors.js";
 
 const SUPPORTED_PROTOCOLS = new Set(["2025-06-18", "2025-03-26", "2024-11-05"]);
 const DEFAULT_PROTOCOL = "2025-06-18";
@@ -533,11 +534,10 @@ export const daysServer = {
     } catch (err) {
       // Preserve the original distinction: a UserError is actionable prose, any
       // other failure means a provider could not be reached.
-      throw new Error(
-        err instanceof UserError
-          ? err.message
-          : `The holiday calendar could not be reached right now. ${err.message}`
-      );
+      // Keep the distinction this module already knows: a UserError is bad
+      // input, anything else means a holiday provider could not be reached.
+      if (err instanceof UserError) throw new Error(err.message);
+      throw markFault(new Error(`The holiday calendar could not be reached right now. ${err.message}`));
     }
   },
 };

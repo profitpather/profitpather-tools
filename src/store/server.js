@@ -12,6 +12,8 @@
  * every tool carries a not_observable list saying what it could not see.
  */
 
+import { markFault } from "../errors.js";
+
 const UA = "ProfitpatherStorefrontCheck/1.0 (+https://tools.profitpather.com/store)";
 const FETCH_TIMEOUT_MS = 12000;
 const MAX_HTML_BYTES = 800_000;
@@ -304,9 +306,9 @@ async function detectTrackingTags(a) {
   const u = safeUrl(a.url);
   const page = await tryGet(u.toString());
   if (!page.body) {
-    throw new Error(
+    throw markFault(new Error(
       `Could not read ${u.hostname}: ${page.error || "HTTP " + page.status}. If the store blocks unknown clients this tool cannot audit it from outside.`
-    );
+    ));
   }
   const html = page.body;
   const platform = detectPlatform(html, page.headers, page.finalUrl);
@@ -435,7 +437,7 @@ async function checkAgentReadiness(a) {
 async function checkStructuredData(a) {
   const u = safeUrl(a.url);
   const page = await tryGet(u.toString());
-  if (!page.body) throw new Error(`Could not read ${u.toString()}: ${page.error || "HTTP " + page.status}.`);
+  if (!page.body) throw markFault(new Error(`Could not read ${u.toString()}: ${page.error || "HTTP " + page.status}.`));
   const blocks = jsonLdBlocks(page.body);
   const good = blocks.filter((b) => b.ok);
   const broken = blocks.filter((b) => !b.ok);
@@ -485,9 +487,9 @@ async function auditProductFeed(a) {
   try {
     products = JSON.parse(r.body)?.products;
   } catch {
-    throw new Error(
+    throw markFault(new Error(
       `${u.hostname} did not return a readable products.json (HTTP ${r.status || r.error}). That endpoint is Shopify-only, so this tool does not apply to other platforms.`
-    );
+    ));
   }
   if (!Array.isArray(products)) throw new Error(`${u.hostname} returned no product array, so there is nothing to audit.`);
 

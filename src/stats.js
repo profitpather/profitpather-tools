@@ -16,16 +16,19 @@
  * swallows its own errors.
  */
 
-const SCHEMA = `CREATE TABLE IF NOT EXISTS rpc_daily (
+// v1 lacked `kind`, so a bucket could not say whether a failure was the
+// caller's bad input or this server breaking. v2 puts kind in the primary key.
+// v1 is still read so the first day of measurement is not thrown away.
+const SCHEMA_V2 = `CREATE TABLE IF NOT EXISTS rpc_daily_v2 (
   day TEXT NOT NULL,
   server TEXT NOT NULL,
   method TEXT NOT NULL,
   tool TEXT NOT NULL DEFAULT '',
   client TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT 'ok',
   calls INTEGER NOT NULL DEFAULT 0,
-  errors INTEGER NOT NULL DEFAULT 0,
   cached INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (day, server, method, tool, client)
+  PRIMARY KEY (day, server, method, tool, client, kind)
 )`;
 
 let schemaReady = false;
@@ -60,23 +63,22 @@ export function clientFamily(ua) {
 }
 
 /** Fire-and-forget counter bump. */
-export function recordRpc(env, ctx, { server, method, tool = "", client = "none", isError = false, cached = false }) {
+export function recordRpc(env, ctx, { server, method, tool = "", client = "none", kind = "ok", cached = false }) {
   if (!env?.STATS || !method) return;
   const day = new Date().toISOString().slice(0, 10);
   const write = async () => {
     try {
       if (!schemaReady) {
-        await env.STATS.prepare(SCHEMA).run();
+        await env.STATS.prepare(SCHEMA_V2).run();
         schemaReady = true;
       }
       await env.STATS.prepare(
-        `INSERT INTO rpc_daily(day,server,method,tool,client,calls,errors,cached)
-         VALUES(?,?,?,?,?,1,?,?)
-         ON CONFLICT(day,server,method,tool,client) DO UPDATE SET
+        `INSERT INTO rpc_daily_v2(day,server,method,tool,client,kind,calls,cached)
+         VALUES(?,?,?,?,?,?,1,?)
+         ON CONFLICT(day,server,method,tool,client,kind) DO UPDATE SET
            calls = calls + 1,
-           errors = errors + excluded.errors,
            cached = cached + excluded.cached`
-      ).bind(day, server, String(method).slice(0, 40), String(tool || "").slice(0, 60), client, isError ? 1 : 0, cached ? 1 : 0).run();
+      ).bind(day, server, String(method).slice(0, 40), String(tool || "").slice(0, 60), client, String(kind).slice(0, 24), cached ? 1 : 0).run();
     } catch {
       // A telemetry failure must never surface to the caller or retry.
     }
@@ -90,40 +92,60 @@ const pct = (n, d) => (d ? Math.round((n / d) * 1000) / 10 : 0);
 export async function statsPayload(env, days = 14) {
   const since = new Date(Date.now() - (Math.max(1, Math.min(90, days)) - 1) * 86400000)
     .toISOString().slice(0, 10);
-  const { results = [] } = await env.STATS.prepare(
-    `SELECT day,server,method,tool,client,calls,errors,cached FROM rpc_daily WHERE day >= ? ORDER BY day DESC`
+  const rows = [];
+  const { results: v2 = [] } = await env.STATS.prepare(
+    `SELECT day,server,method,tool,client,kind,calls,cached FROM rpc_daily_v2 WHERE day >= ? ORDER BY day DESC`
   ).bind(since).all();
+  rows.push(...v2);
+  // The v1 table predates the kind column; its rows are labelled so the mixed
+  // history is obvious rather than quietly counted as "ok".
+  try {
+    const { results: v1 = [] } = await env.STATS.prepare(
+      `SELECT day,server,method,tool,client,calls,errors,cached FROM rpc_daily WHERE day >= ? ORDER BY day DESC`
+    ).bind(since).all();
+    for (const r of v1) rows.push({ ...r, kind: "unclassified_v1" });
+  } catch { /* v1 may not exist */ }
 
   const bump = (m, k, r) => {
-    const o = m[k] || (m[k] = { calls: 0, errors: 0, cached: 0 });
-    o.calls += r.calls; o.errors += r.errors; o.cached += r.cached;
+    const o = m[k] || (m[k] = { calls: 0, faults: 0, cached: 0 });
+    o.calls += r.calls; o.cached += r.cached;
+    if (r.kind === "fault") o.faults += r.calls;
   };
-  const byDay = {}, byServer = {}, byMethod = {}, byClient = {}, byTool = {};
-  let calls = 0, errors = 0, cached = 0, work = 0, inspect = 0;
-  for (const r of results) {
-    calls += r.calls; errors += r.errors; cached += r.cached;
+  const byDay = {}, byServer = {}, byMethod = {}, byClient = {}, byTool = {}, byKind = {};
+  let calls = 0, cached = 0, work = 0, inspect = 0;
+  for (const r of rows) {
+    calls += r.calls; cached += r.cached;
     if (isWork(r.method)) work += r.calls; else inspect += r.calls;
     bump(byDay, r.day, r); bump(byServer, r.server, r);
     bump(byMethod, r.method, r); bump(byClient, r.client, r);
+    bump(byKind, r.kind || "ok", r);
     if (r.tool) bump(byTool, `${r.server}/${r.tool}`, r);
   }
   const sorted = (m) => Object.fromEntries(Object.entries(m).sort((a, b) => b[1].calls - a[1].calls));
+  const kindTotal = (k) => byKind[k]?.calls || 0;
+  const faults = kindTotal("fault");
 
   return {
     window: { since, days, generated_at: new Date().toISOString() },
     totals: {
-      calls, errors, cache_hits: cached,
+      calls,
+      cache_hits: cached,
       real_work: work,
       inspection: inspect,
       real_work_pct: pct(work, calls),
-      note: "real_work counts tools/call, the only method that asks a server to do its job. Everything else (initialize, tools/list, ping, notifications) is a client or a directory robot looking at the server rather than using it.",
+      faults,
+      fault_pct: pct(faults, calls),
+      caller_errors: kindTotal("user_error") + kindTotal("bad_request"),
+      unsupported_method: kindTotal("unsupported_method"),
+      note: "real_work counts tools/call, the only method that asks a server to do its job. faults are this server or its upstreams failing. caller_errors are invalid requests that got a clear refusal, which is the server working. unsupported_method is a spec-required method-not-found and is not a failure at all.",
     },
+    by_kind: sorted(byKind),
     by_method: sorted(byMethod),
     by_server: sorted(byServer),
     by_tool: sorted(byTool),
     by_client: sorted(byClient),
     by_day: Object.fromEntries(Object.entries(byDay).sort((a, b) => a[0].localeCompare(b[0]))),
-    buckets: results.length,
+    buckets: rows.length,
     privacy: "Aggregate counters only. No IP addresses, no tool arguments and no raw user-agents are recorded, so this cannot show who asked what about which store.",
   };
 }
@@ -132,8 +154,8 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
 
 /** A table a human can read, because the person asking is a person. */
 export function statsHTML(d, key) {
-  const rows = (m, label) => `<h2>${esc(label)}</h2><table><tr><th>${esc(label)}</th><th>calls</th><th>errors</th><th>cache hits</th></tr>${
-    Object.entries(m).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v.calls}</td><td>${v.errors}</td><td>${v.cached}</td></tr>`).join("") || "<tr><td colspan=4>no data yet</td></tr>"
+  const rows = (m, label) => `<h2>${esc(label)}</h2><table><tr><th>${esc(label)}</th><th>calls</th><th>faults</th><th>cache hits</th></tr>${
+    Object.entries(m).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v.calls}</td><td>${v.faults}</td><td>${v.cached}</td></tr>`).join("") || "<tr><td colspan=4>no data yet</td></tr>"
   }</table>`;
   const t = d.totals;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -159,9 +181,11 @@ th{font-size:12px;color:var(--dim);font-weight:600}tr:last-child td{border-botto
   <div class="kpi"><b>${t.real_work}</b><span>real work (tools/call)</span></div>
   <div class="kpi"><b>${t.real_work_pct}%</b><span>of calls are real work</span></div>
   <div class="kpi"><b>${t.cache_hits}</b><span>served from cache</span></div>
-  <div class="kpi"><b>${t.errors}</b><span>errors</span></div>
+  <div class="kpi"><b>${t.faults}</b><span>faults (our fault)</span></div>
+  <div class="kpi"><b>${t.caller_errors}</b><span>refused bad input</span></div>
 </div>
 <div class="note">${esc(t.note)}</div>
+${rows(d.by_kind, "outcome")}
 ${rows(d.by_client, "client")}
 ${rows(d.by_method, "method")}
 ${rows(d.by_tool, "tool actually called")}
